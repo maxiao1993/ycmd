@@ -19,7 +19,6 @@ import re
 import shlex
 import subprocess
 import sys
-import traceback
 
 PY_MAJOR, PY_MINOR = sys.version_info[ 0 : 2 ]
 if not ( ( PY_MAJOR == 2 and PY_MINOR >= 6 ) or
@@ -34,9 +33,10 @@ DIR_OF_THIRD_PARTY = p.join( DIR_OF_THIS_SCRIPT, 'third_party' )
 for folder in os.listdir( DIR_OF_THIRD_PARTY ):
   abs_folder_path = p.join( DIR_OF_THIRD_PARTY, folder )
   if p.isdir( abs_folder_path ) and not os.listdir( abs_folder_path ):
-    sys.exit( 'Some folders in ' + DIR_OF_THIRD_PARTY + ' are empty; '
-              'you probably forgot to run:'
-              '\n\tgit submodule update --init --recursive\n\n' )
+    sys.exit(
+      'ERROR: some folders in {0} are empty; you probably forgot to run:\n'
+      '\tgit submodule update --init --recursive\n'.format( DIR_OF_THIRD_PARTY )
+    )
 
 sys.path.insert( 1, p.abspath( p.join( DIR_OF_THIRD_PARTY, 'argparse' ) ) )
 
@@ -66,7 +66,9 @@ DYNAMIC_PYTHON_LIBRARY_REGEX = """
   # OS X
   libpython{major}\.{minor}m?\.dylib|
   # Windows
-  python{major}{minor}\.lib
+  python{major}{minor}\.lib|
+  # Cygwin
+  libpython{major}\.{minor}\.dll\.a
   )$
 """
 
@@ -130,35 +132,33 @@ def NumCores():
 
 def CheckDeps():
   if not PathToFirstExistingExecutable( [ 'cmake' ] ):
-    sys.exit( 'Please install CMake and retry.')
+    sys.exit( 'ERROR: please install CMake and retry.')
 
 
-# Shamelessly stolen from https://gist.github.com/edufelipe/1027906
-def CheckOutput( *popen_args, **kwargs ):
-  """Run command with arguments and return its output as a byte string.
-  Backported from Python 2.7."""
-
-  process = subprocess.Popen( stdout=subprocess.PIPE, *popen_args, **kwargs )
-  output, unused_err = process.communicate()
-  retcode = process.poll()
-  if retcode:
-    command = kwargs.get( 'args' )
-    if command is None:
-      command = popen_args[ 0 ]
-    error = subprocess.CalledProcessError( retcode, command )
-    error.output = output
-    raise error
-  return output
+def CheckCall( args, **kwargs ):
+  exit_message = kwargs.get( 'exit_message', None )
+  kwargs.pop( 'exit_message', None )
+  try:
+    subprocess.check_call( args, **kwargs )
+  except subprocess.CalledProcessError as error:
+    if exit_message:
+      sys.exit( exit_message )
+    sys.exit( error.returncode )
 
 
 def GetPossiblePythonLibraryDirectories():
-  library_dir = p.dirname( sysconfig.get_python_lib( standard_lib = True ) )
+  prefix = sys.base_prefix if PY_MAJOR >= 3 else sys.prefix
+
   if OnWindows():
-    return [ p.join( library_dir, 'libs' ) ]
-  # On pyenv, there is no Python dynamic library in the directory returned by
-  # the LIBPL variable. Such library is located in the parent folder of the
-  # standard Python library modules.
-  return [ sysconfig.get_config_var( 'LIBPL' ), library_dir ]
+    return [ p.join( prefix, 'libs' ) ]
+  # On pyenv and some distributions, there is no Python dynamic library in the
+  # directory returned by the LIBPL variable. Such library can be found in the
+  # "lib" or "lib64" folder of the base Python installation.
+  return [
+    sysconfig.get_config_var( 'LIBPL' ),
+    p.join( prefix, 'lib64' ),
+    p.join( prefix, 'lib' )
+  ]
 
 
 def FindPythonLibraries():
@@ -192,6 +192,9 @@ def FindPythonLibraries():
   static_libraries = []
 
   for library_dir in library_dirs:
+    if not p.exists( library_dir ):
+      continue
+
     # Files are sorted so that we found the non-versioned Python library before
     # the versioned one.
     for filename in sorted( os.listdir( library_dir ) ):
@@ -229,17 +232,9 @@ def CustomPythonCmakeArgs():
 
 def GetGenerator( args ):
   if OnWindows():
-    if args.msvc == 14:
-      generator = 'Visual Studio 14'
-    elif args.msvc == 12:
-      generator = 'Visual Studio 12'
-    else:
-      generator = 'Visual Studio 11'
-
-    if platform.architecture()[ 0 ] == '64bit':
-      generator = generator + ' Win64'
-    return generator
-
+    return 'Visual Studio {version}{arch}'.format(
+        version = args.msvc,
+        arch = ' Win64' if platform.architecture()[ 0 ] == '64bit' else '' )
   if PathToFirstExistingExecutable( ['ninja'] ):
     return 'Ninja'
   return 'Unix Makefiles'
@@ -261,8 +256,8 @@ def ParseArguments():
   parser.add_argument( '--system-boost', action = 'store_true',
                        help = 'Use the system boost instead of bundled one. '
                        'NOT RECOMMENDED OR SUPPORTED!')
-  parser.add_argument( '--msvc', type = int, choices = [ 11, 12, 14 ],
-                       default = 14, help = 'Choose the Microsoft Visual '
+  parser.add_argument( '--msvc', type = int, choices = [ 12, 14, 15 ],
+                       default = 15, help = 'Choose the Microsoft Visual '
                        'Studio version (default: %(default)s).' )
   parser.add_argument( '--tern-completer',
                        action = 'store_true',
@@ -271,18 +266,31 @@ def ParseArguments():
                        action = 'store_true',
                        help   = 'Enable all supported completers',
                        dest   = 'all_completers' )
+  parser.add_argument( '--enable-coverage',
+                       action = 'store_true',
+                       help   = 'For developers: Enable gcov coverage for the '
+                                'c++ module' )
   parser.add_argument( '--enable-debug',
                        action = 'store_true',
                        help   = 'For developers: build ycm_core library with '
                                 'debug symbols' )
+  parser.add_argument( '--build-dir',
+                       help   = 'For developers: perform the build in the '
+                                'specified directory, and do not delete the '
+                                'build output. This is useful for incremental '
+                                'builds, and required for coverage data' )
 
   args = parser.parse_args()
+
+  if args.enable_coverage:
+    # We always want a debug build when running with coverage enabled
+    args.enable_debug = True
 
   if ( args.system_libclang and
        not args.clang_completer and
        not args.all_completers ):
-    sys.exit( "You can't pass --system-libclang without also passing "
-              "--clang-completer or --all as well." )
+    sys.exit( 'ERROR: you can\'t pass --system-libclang without also passing '
+              '--clang-completer or --all as well.' )
   return args
 
 
@@ -299,6 +307,11 @@ def GetCmakeArgs( parsed_args ):
 
   if parsed_args.enable_debug:
     cmake_args.append( '-DCMAKE_BUILD_TYPE=Debug' )
+    cmake_args.append( '-DUSE_DEV_FLAGS=ON' )
+
+  # coverage is not supported for c++ on MSVC
+  if not OnWindows() and parsed_args.enable_coverage:
+    cmake_args.append( '-DCMAKE_CXX_FLAGS=-coverage' )
 
   use_python2 = 'ON' if PY_MAJOR == 2 else 'OFF'
   cmake_args.append( '-DUSE_PYTHON2=' + use_python2 )
@@ -317,12 +330,27 @@ def RunYcmdTests( build_dir ):
   if OnWindows():
     # We prepend the folder of the ycm_core_tests executable to the PATH
     # instead of overwriting it so that the executable is able to find the
-    # python35.dll library.
+    # Python library.
     new_env[ 'PATH' ] = DIR_OF_THIS_SCRIPT + ';' + new_env[ 'PATH' ]
   else:
     new_env[ 'LD_LIBRARY_PATH' ] = DIR_OF_THIS_SCRIPT
 
-  subprocess.check_call( p.join( tests_dir, 'ycm_core_tests' ), env = new_env )
+  CheckCall( p.join( tests_dir, 'ycm_core_tests' ), env = new_env )
+
+
+def RunYcmdBenchmarks( build_dir ):
+  benchmarks_dir = p.join( build_dir, 'ycm', 'benchmarks' )
+  new_env = os.environ.copy()
+
+  if OnWindows():
+    # We prepend the folder of the ycm_core_tests executable to the PATH
+    # instead of overwriting it so that the executable is able to find the
+    # Python library.
+    new_env[ 'PATH' ] = DIR_OF_THIS_SCRIPT + ';' + new_env[ 'PATH' ]
+  else:
+    new_env[ 'LD_LIBRARY_PATH' ] = DIR_OF_THIS_SCRIPT
+
+  CheckCall( p.join( benchmarks_dir, 'ycm_core_benchmarks' ), env = new_env )
 
 
 # On Windows, if the ycmd library is in use while building it, a LNK1104
@@ -346,7 +374,17 @@ def ExitIfYcmdLibInUseOnWindows():
 
 
 def BuildYcmdLib( args ):
-  build_dir = mkdtemp( prefix = 'ycm_build.' )
+  if args.build_dir:
+    build_dir = os.path.abspath( args.build_dir )
+
+    if os.path.exists( build_dir ):
+      print( 'The supplied build directory ' + build_dir + ' exists, '
+             'deleting it.' )
+      rmtree( build_dir, ignore_errors = OnTravisOrAppVeyor() )
+
+    os.makedirs( build_dir )
+  else:
+    build_dir = mkdtemp( prefix = 'ycm_build_' )
 
   try:
     full_cmake_args = [ '-G', GetGenerator( args ) ]
@@ -355,56 +393,67 @@ def BuildYcmdLib( args ):
     full_cmake_args.append( p.join( DIR_OF_THIS_SCRIPT, 'cpp' ) )
 
     os.chdir( build_dir )
-    try:
-      subprocess.check_call( [ 'cmake' ] + full_cmake_args )
 
-      build_target = ( 'ycm_core' if 'YCM_TESTRUN' not in os.environ else
-                       'ycm_core_tests' )
+    exit_message = (
+      'ERROR: the build failed.\n\n'
+      'NOTE: it is *highly* unlikely that this is a bug but rather\n'
+      'that this is a problem with the configuration of your system\n'
+      'or a missing dependency. Please carefully read CONTRIBUTING.md\n'
+      'and if you\'re sure that it is a bug, please raise an issue on the\n'
+      'issue tracker, including the entire output of this script\n'
+      'and the invocation line used to run it.' )
 
-      build_command = [ 'cmake', '--build', '.', '--target', build_target ]
-      if OnWindows():
-        config = 'Debug' if args.enable_debug else 'Release'
-        build_command.extend( [ '--config', config ] )
-      else:
-        build_command.extend( [ '--', '-j', str( NumCores() ) ] )
+    CheckCall( [ 'cmake' ] + full_cmake_args, exit_message = exit_message )
 
-      subprocess.check_call( build_command )
-    except subprocess.CalledProcessError:
-      traceback.print_exc()
-      sys.exit(
-        '\n\nERROR: The build failed.\n\n'
-        'NOTE: It is *highly* unlikely that this is a bug but rather\n'
-        'that this is a problem with the configuration of your system\n'
-        'or a missing dependency. Please carefully read CONTRIBUTING.md\n'
-        "and if you're sure that it is a bug, please raise an issue on the\n"
-        'issue tracker, including the entire output of this script\n'
-        'and the invocation line used to run it.\n' )
+    build_targets = [ 'ycm_core' ]
+    if 'YCM_TESTRUN' in os.environ:
+      build_targets.append( 'ycm_core_tests' )
+    if 'YCM_BENCHMARK' in os.environ:
+      build_targets.append( 'ycm_core_benchmarks' )
+
+    if OnWindows():
+      config = 'Debug' if args.enable_debug else 'Release'
+      build_config = [ '--config', config ]
+    else:
+      build_config = [ '--', '-j', str( NumCores() ) ]
+
+    for target in build_targets:
+      build_command = ( [ 'cmake', '--build', '.', '--target', target ] +
+                        build_config )
+      CheckCall( build_command, exit_message = exit_message )
 
     if 'YCM_TESTRUN' in os.environ:
       RunYcmdTests( build_dir )
+    if 'YCM_BENCHMARK' in os.environ:
+      RunYcmdBenchmarks( build_dir )
   finally:
     os.chdir( DIR_OF_THIS_SCRIPT )
-    rmtree( build_dir, ignore_errors = OnTravisOrAppVeyor() )
+
+    if args.build_dir:
+      print( 'The build files are in: ' + build_dir )
+    else:
+      rmtree( build_dir, ignore_errors = OnTravisOrAppVeyor() )
 
 
 def BuildOmniSharp():
   build_command = PathToFirstExistingExecutable(
     [ 'msbuild', 'msbuild.exe', 'xbuild' ] )
   if not build_command:
-    sys.exit( 'msbuild or xbuild is required to build Omnisharp' )
+    sys.exit( 'ERROR: msbuild or xbuild is required to build Omnisharp.' )
 
   os.chdir( p.join( DIR_OF_THIS_SCRIPT, 'third_party', 'OmniSharpServer' ) )
-  subprocess.check_call( [ build_command, '/property:Configuration=Release' ] )
+  CheckCall( [ build_command, '/property:Configuration=Release',
+                              '/property:TargetFrameworkVersion=v4.5' ] )
 
 
 def BuildGoCode():
   if not FindExecutable( 'go' ):
-    sys.exit( 'go is required to build gocode' )
+    sys.exit( 'ERROR: go is required to build gocode.' )
 
   os.chdir( p.join( DIR_OF_THIS_SCRIPT, 'third_party', 'gocode' ) )
-  subprocess.check_call( [ 'go', 'build' ] )
+  CheckCall( [ 'go', 'build' ] )
   os.chdir( p.join( DIR_OF_THIS_SCRIPT, 'third_party', 'godef' ) )
-  subprocess.check_call( [ 'go', 'build' ] )
+  CheckCall( [ 'go', 'build', 'godef.go' ] )
 
 
 def BuildRacerd():
@@ -412,7 +461,7 @@ def BuildRacerd():
   Build racerd. This requires a reasonably new version of rustc/cargo.
   """
   if not FindExecutable( 'cargo' ):
-    sys.exit( 'cargo is required for the rust completer' )
+    sys.exit( 'ERROR: cargo is required for the Rust completer.' )
 
   os.chdir( p.join( DIR_OF_THIRD_PARTY, 'racerd' ) )
   args = [ 'cargo', 'build' ]
@@ -420,17 +469,17 @@ def BuildRacerd():
   # racerd 2.5x slower and we don't care about the speed of the produced racerd.
   if not OnTravisOrAppVeyor():
     args.append( '--release' )
-  subprocess.check_call( args )
+  CheckCall( args )
 
 
 def SetUpTern():
-  paths = {}
-  for exe in [ 'node', 'npm' ]:
-    path = FindExecutable( exe )
-    if not path:
-      sys.exit( '"' + exe + '" is required to set up ternjs' )
-    else:
-      paths[ exe ] = path
+  # On Debian-based distributions, node is by default installed as nodejs.
+  node = PathToFirstExistingExecutable( [ 'nodejs', 'node' ] )
+  if not node:
+    sys.exit( 'ERROR: node is required to set up Tern.' )
+  npm = FindExecutable( 'npm' )
+  if not npm:
+    sys.exit( 'ERROR: npm is required to set up Tern.' )
 
   # We install Tern into a runtime directory. This allows us to control
   # precisely the version (and/or git commit) that is used by ycmd.  We use a
@@ -451,7 +500,7 @@ def SetUpTern():
   # (third_party/tern_runtime) that defines the packages that we require,
   # including Tern and any plugins which we require as standard.
   os.chdir( p.join( DIR_OF_THIS_SCRIPT, 'third_party', 'tern_runtime' ) )
-  subprocess.check_call( [ paths[ 'npm' ], 'install', '--production' ] )
+  CheckCall( [ npm, 'install', '--production' ] )
 
 
 def WritePythonUsedDuringBuild():

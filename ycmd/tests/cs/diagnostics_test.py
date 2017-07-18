@@ -19,8 +19,7 @@ from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
 from __future__ import absolute_import
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 from hamcrest import ( assert_that, contains, contains_string, equal_to,
@@ -90,6 +89,44 @@ def Diagnostics_ZeroBasedLineAndColumn_test( app ):
                          'end': has_entries( {
                            'line_num': 11,
                            'column_num': 2,
+                         } ),
+                       } )
+                     } ) ) )
+
+
+@SharedYcmd
+def Diagnostics_WithRange_test( app ):
+  filepath = PathToTestFile( 'testy', 'DiagnosticRange.cs' )
+  with WrapOmniSharpServer( app, filepath ):
+    contents = ReadFile( filepath )
+
+    results = {}
+    for _ in ( 0, 1 ):  # First call always returns blank for some reason
+      event_data = BuildRequest( filepath = filepath,
+                                 event_name = 'FileReadyToParse',
+                                 filetype = 'cs',
+                                 contents = contents )
+
+      results = app.post_json( '/event_notification', event_data ).json
+
+    assert_that( results,
+                 contains(
+                     has_entries( {
+                       'kind': equal_to( 'WARNING' ),
+                       'text': contains_string(
+                           "Name should have prefix '_'" ),
+                       'location': has_entries( {
+                         'line_num': 3,
+                         'column_num': 16
+                       } ),
+                       'location_extent': has_entries( {
+                         'start': has_entries( {
+                           'line_num': 3,
+                           'column_num': 16,
+                         } ),
+                         'end': has_entries( {
+                           'line_num': 3,
+                           'column_num': 25,
                          } ),
                        } )
                      } ) ) )

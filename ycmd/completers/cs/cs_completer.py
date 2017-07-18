@@ -1,5 +1,6 @@
-# Copyright (C) 2011, 2012 Chiel ten Brinke <ctenbrinke@gmail.com>
-#                          Google Inc.
+# Copyright (C) 2011-2012 Chiel ten Brinke <ctenbrinke@gmail.com>
+#                         Google Inc.
+#               2017      ycmd contributors
 #
 # This file is part of ycmd.
 #
@@ -20,25 +21,24 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
-from future import standard_library
-standard_library.install_aliases()
-from future.utils import itervalues
 
 from collections import defaultdict
+from future.utils import itervalues
+import logging
 import os
-import time
 import re
+import requests
+import threading
+
 from ycmd.completers.completer import Completer
-from ycmd.utils import ForceSemanticCompletion, CodepointOffsetToByteOffset
+from ycmd.completers.completer_utils import GetFileContents
+from ycmd.completers.cs import solutiondetection
+from ycmd.utils import ( ForceSemanticCompletion, CodepointOffsetToByteOffset,
+                         urljoin )
 from ycmd import responses
 from ycmd import utils
-from ycmd.completers.completer_utils import GetFileContents
-import requests
-import urllib.parse
-import logging
-from . import solutiondetection
-import threading
 
 SERVER_NOT_FOUND_MSG = ( 'OmniSharp server binary not found at {0}. ' +
                          'Did you compile it? You can do so by running ' +
@@ -49,6 +49,7 @@ PATH_TO_OMNISHARP_BINARY = os.path.abspath(
   os.path.join( os.path.dirname( __file__ ), '..', '..', '..',
                 'third_party', 'OmniSharpServer', 'OmniSharp',
                 'bin', 'Release', 'OmniSharp.exe' ) )
+LOGFILE_FORMAT = 'omnisharp_{port}_{sln}_{std}_'
 
 
 class CsharpCompleter( Completer ):
@@ -72,10 +73,9 @@ class CsharpCompleter( Completer ):
 
 
   def Shutdown( self ):
-    if ( self.user_options[ 'auto_stop_csharp_server' ] ):
+    if self.user_options[ 'auto_stop_csharp_server' ]:
       for solutioncompleter in itervalues( self._completer_per_solution ):
-        if solutioncompleter._ServerIsRunning():
-          solutioncompleter._StopServer()
+        solutioncompleter._StopServer()
 
 
   def SupportedFiletypes( self ):
@@ -219,16 +219,24 @@ class CsharpCompleter( Completer ):
 
   def _QuickFixToDiagnostic( self, request_data, quick_fix ):
     filename = quick_fix[ "FileName" ]
+    # NOTE: end of diagnostic range returned by the OmniSharp server is not
+    # included.
     location = _BuildLocation( request_data,
                                filename,
                                quick_fix[ 'Line' ],
                                quick_fix[ 'Column' ] )
-    location_range = responses.Range( location, location )
+    location_end = _BuildLocation( request_data,
+                                   filename,
+                                   quick_fix[ 'EndLine' ],
+                                   quick_fix[ 'EndColumn' ] )
+    if not location_end:
+      location_end = location
+    location_extent = responses.Range( location, location_end )
     return responses.Diagnostic( list(),
                                  location,
-                                 location_range,
-                                 quick_fix[ "Text" ],
-                                 quick_fix[ "LogLevel" ].upper() )
+                                 location_extent,
+                                 quick_fix[ 'Text' ],
+                                 quick_fix[ 'LogLevel' ].upper() )
 
 
   def GetDetailedDiagnostic( self, request_data ):
@@ -263,47 +271,30 @@ class CsharpCompleter( Completer ):
     try:
       completer = self._GetSolutionCompleter( request_data )
     except RuntimeError:
-      return (
-        'C# completer debug information:\n'
-        '  OmniSharp not running\n'
-        '  OmniSharp executable: {0}\n'
-        '  OmniSharp solution: not found'.format( PATH_TO_OMNISHARP_BINARY ) )
+      omnisharp_server = responses.DebugInfoServer(
+        name = 'OmniSharp',
+        handle = None,
+        executable = PATH_TO_OMNISHARP_BINARY )
+
+      return responses.BuildDebugInfoResponse( name = 'C#',
+                                               servers = [ omnisharp_server ] )
 
     with completer._server_state_lock:
-      if completer._ServerIsRunning():
-        return (
-          'C# completer debug information:\n'
-          '  OmniSharp running at: {0}\n'
-          '  OmniSharp process ID: {1}\n'
-          '  OmniSharp executable: {2}\n'
-          '  OmniSharp logfiles:\n'
-          '    {3}\n'
-          '    {4}\n'
-          '  OmniSharp solution: {5}'.format( completer._ServerLocation(),
-                                              completer._omnisharp_phandle.pid,
-                                              PATH_TO_OMNISHARP_BINARY,
-                                              completer._filename_stdout,
-                                              completer._filename_stderr,
-                                              completer._solution_path ) )
+      solution_item = responses.DebugInfoItem(
+        key = 'solution',
+        value = completer._solution_path )
 
-      if completer._filename_stdout and completer._filename_stderr:
-        return (
-          'C# completer debug information:\n'
-          '  OmniSharp no longer running\n'
-          '  OmniSharp executable: {0}\n'
-          '  OmniSharp logfiles:\n'
-          '    {1}\n'
-          '    {2}\n'
-          '  OmniSharp solution: {3}'.format( PATH_TO_OMNISHARP_BINARY,
-                                              completer._filename_stdout,
-                                              completer._filename_stderr,
-                                              completer._solution_path ) )
+      omnisharp_server = responses.DebugInfoServer(
+        name = 'OmniSharp',
+        handle = completer._omnisharp_phandle,
+        executable = PATH_TO_OMNISHARP_BINARY,
+        address = 'localhost',
+        port = completer._omnisharp_port,
+        logfiles = [ completer._filename_stdout, completer._filename_stderr ],
+        extras = [ solution_item ] )
 
-      return ( 'C# completer debug information:\n'
-               '  OmniSharp is not running\n'
-               '  OmniSharp executable: {0}\n'
-               '  OmniSharp solution: {1}'.format( PATH_TO_OMNISHARP_BINARY,
-                                                   completer._solution_path ) )
+      return responses.BuildDebugInfoResponse( name = 'C#',
+                                               servers = [ omnisharp_server ] )
 
 
   def ServerIsHealthy( self ):
@@ -383,14 +374,15 @@ class CsharpSolutionCompleter( object ):
       if utils.OnCygwin():
         command.extend( [ '--client-path-mode', 'Cygwin' ] )
 
-      filename_format = os.path.join( utils.PathToCreatedTempDir(),
-                                      u'omnisharp_{port}_{sln}_{std}.log' )
-
       solutionfile = os.path.basename( path_to_solutionfile )
-      self._filename_stdout = filename_format.format(
-          port = self._omnisharp_port, sln = solutionfile, std = 'stdout' )
-      self._filename_stderr = filename_format.format(
-          port = self._omnisharp_port, sln = solutionfile, std = 'stderr' )
+      self._filename_stdout = utils.CreateLogfile(
+          LOGFILE_FORMAT.format( port = self._omnisharp_port,
+                                 sln = solutionfile,
+                                 std = 'stdout' ) )
+      self._filename_stderr = utils.CreateLogfile(
+          LOGFILE_FORMAT.format( port = self._omnisharp_port,
+                                 sln = solutionfile,
+                                 std = 'stderr' ) )
 
       with utils.OpenForStdHandle( self._filename_stderr ) as fstderr:
         with utils.OpenForStdHandle( self._filename_stdout ) as fstdout:
@@ -403,39 +395,24 @@ class CsharpSolutionCompleter( object ):
   def _StopServer( self ):
     """ Stop the OmniSharp server using a lock. """
     with self._server_state_lock:
-      if not self._ServerIsRunning():
-        return
-
-      self._logger.info( 'Stopping OmniSharp server' )
-
-      self._TryToStopServer()
-
-      # Kill it if it's still up
       if self._ServerIsRunning():
-        self._logger.info( 'Killing OmniSharp server' )
-        self._omnisharp_phandle.kill()
+        self._logger.info( 'Stopping OmniSharp server with PID {0}'.format(
+                               self._omnisharp_phandle.pid ) )
+        self._GetResponse( '/stopserver' )
+        try:
+          utils.WaitUntilProcessIsTerminated( self._omnisharp_phandle,
+                                              timeout = 5 )
+          self._logger.info( 'OmniSharp server stopped' )
+        except RuntimeError:
+          self._logger.exception( 'Error while stopping OmniSharp server' )
 
-      self._CleanupAfterServerStop()
-
-      self._logger.info( 'Stopped OmniSharp server' )
-
-
-  def _TryToStopServer( self ):
-    for _ in range( 5 ):
-      try:
-        self._GetResponse( '/stopserver', timeout = .1 )
-      except:
-        pass
-      for _ in range( 10 ):
-        if not self._ServerIsRunning():
-          return
-        time.sleep( .1 )
+      self._CleanUp()
 
 
-  def _CleanupAfterServerStop( self ):
+  def _CleanUp( self ):
     self._omnisharp_port = None
     self._omnisharp_phandle = None
-    if ( not self._keep_logfiles ):
+    if not self._keep_logfiles:
       if self._filename_stdout:
         utils.RemoveIfExists( self._filename_stdout )
         self._filename_stdout = None
@@ -607,7 +584,7 @@ class CsharpSolutionCompleter( object ):
 
   def _GetResponse( self, handler, parameters = {}, timeout = None ):
     """ Handle communication with server """
-    target = urllib.parse.urljoin( self._ServerLocation(), handler )
+    target = urljoin( self._ServerLocation(), handler )
     response = requests.post( target, data = parameters, timeout = timeout )
     return response.json()
 
@@ -701,6 +678,8 @@ def _IndexToLineColumn( text, index ):
 
 
 def _BuildLocation( request_data, filename, line_num, column_num ):
+  if line_num <= 0 or column_num <= 0:
+    return None
   contents = utils.SplitLines( GetFileContents( request_data, filename ) )
   line_value = contents[ line_num - 1 ]
   return responses.Location(

@@ -21,8 +21,7 @@ from __future__ import absolute_import
 from __future__ import unicode_literals
 from __future__ import print_function
 from __future__ import division
-from future import standard_library
-standard_library.install_aliases()
+# Not installing aliases from python-future; it's unreliable and slow.
 from builtins import *  # noqa
 
 import json
@@ -276,6 +275,8 @@ def GetCompletions_FilteredNoResults_Fallback_test( app ):
           CompletionEntryMatcher( 'do_', '[ID]' ),
           CompletionEntryMatcher( 'do_something', '[ID]' ),
           CompletionEntryMatcher( 'do_another_thing', '[ID]' ),
+          CompletionEntryMatcher( 'DO_SOMETHING_TO', '[ID]' ),
+          CompletionEntryMatcher( 'DO_SOMETHING_VIA', '[ID]' )
         ),
         'errors': empty()
       } )
@@ -283,7 +284,7 @@ def GetCompletions_FilteredNoResults_Fallback_test( app ):
   } )
 
 
-@SharedYcmd
+@IsolatedYcmd
 def GetCompletions_WorksWithExplicitFlags_test( app ):
   app.post_json(
     '/ignore_extra_conf_file',
@@ -317,7 +318,7 @@ int main()
   eq_( 7, response_data[ 'completion_start_column' ] )
 
 
-@SharedYcmd
+@IsolatedYcmd
 def GetCompletions_NoCompletionsWhenAutoTriggerOff_test( app ):
   with UserOption( 'auto_trigger', False ):
     app.post_json(

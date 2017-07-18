@@ -16,15 +16,12 @@
 // along with ycmd.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "IdentifierCompleter.h"
-#include "standard.h"
 
 #include "Candidate.h"
 #include "IdentifierUtils.h"
 #include "Result.h"
 #include "Utils.h"
 #include "ReleaseGil.h"
-
-#include <algorithm>
 
 namespace YouCompleteMe {
 
@@ -69,7 +66,7 @@ void IdentifierCompleter::ClearForFileAndAddIdentifiersToDatabase(
 void IdentifierCompleter::AddIdentifiersToDatabaseFromTagFiles(
   const std::vector< std::string > &absolute_paths_to_tag_files ) {
   ReleaseGil unlock;
-  foreach( const std::string & path, absolute_paths_to_tag_files ) {
+  for( const std::string & path : absolute_paths_to_tag_files ) {
     identifier_database_.AddIdentifiers(
       ExtractIdentifiersFromTagsFile( path ) );
   }
@@ -96,7 +93,7 @@ std::vector< std::string > IdentifierCompleter::CandidatesForQueryAndType(
   std::vector< std::string > candidates;
   candidates.reserve( results.size() );
 
-  foreach ( const Result & result, results ) {
+  for ( const Result & result : results ) {
     candidates.push_back( *result.Text() );
   }
   return candidates;

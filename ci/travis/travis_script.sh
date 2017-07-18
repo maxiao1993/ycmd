@@ -1,7 +1,5 @@
-#!/bin/bash
-
-if [ "${YCMD_FLAKE8}" = true ]; then
-  ./run_tests.py
+if [ "${YCM_BENCHMARK}" == "true" ]; then
+  ./benchmark.py
 else
-  ./run_tests.py --no-flake8
+  ./run_tests.py
 fi

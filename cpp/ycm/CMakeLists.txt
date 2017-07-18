@@ -30,40 +30,53 @@ if ( USE_CLANG_COMPLETER AND
      NOT PATH_TO_LLVM_ROOT AND
      NOT EXTERNAL_LIBCLANG_PATH )
 
-  set( CLANG_VERSION "3.8.0" )
+  set( CLANG_VERSION 4.0.1 )
 
   if ( APPLE )
     set( CLANG_DIRNAME "clang+llvm-${CLANG_VERSION}-x86_64-apple-darwin" )
     set( CLANG_SHA256
-         "e5a961e04b0e1738bbb5b824886a34932dc13b0af699d1fe16519d814d7b776f" )
+         "5f697801a46239c04251730b7ccccd3ebbacb9043ad381a061ae6812409e9eae" )
     set( CLANG_FILENAME "${CLANG_DIRNAME}.tar.xz" )
   elseif ( WIN32 )
     if( 64_BIT_PLATFORM )
       set( CLANG_DIRNAME "LLVM-${CLANG_VERSION}-win64" )
       set( CLANG_SHA256
-           "f9c3147157db32beab025314db9b82c600e182d82994880c1d844c70e29d76ef" )
+           "139ba95f9f88199cdc419a674f0a85df3568367623486336843207a4982e36e9" )
     else()
       set( CLANG_DIRNAME "LLVM-${CLANG_VERSION}-win32" )
       set( CLANG_SHA256
-           "ebdb056ebc6efd57c0643733a099920d1d5760a4d570580243e6c63f4b52920f" )
+           "0071e699965d7a0f62f59536a1a16843d1f6919af4c596a82c2a03f05ea34ca6" )
     endif()
     set( CLANG_FILENAME "${CLANG_DIRNAME}.exe" )
+  elseif ( CMAKE_SYSTEM_NAME MATCHES "FreeBSD" )
+    if ( 64_BIT_PLATFORM )
+      set( CLANG_DIRNAME "clang+llvm-${CLANG_VERSION}-amd64-unknown-freebsd10" )
+      set( CLANG_SHA256
+           "685b1381e152ae0341a736a1ad38c1fae91e71e6461da7223e81269ffdef3986" )
+    else()
+      set( CLANG_DIRNAME "clang+llvm-${CLANG_VERSION}-i386-unknown-freebsd10" )
+      set( CLANG_SHA256
+           "9b22e796f847be612b9b33f7a93987386dee0928f6547f61148d9e6edbc6256c" )
+    endif()
+    set( CLANG_FILENAME "${CLANG_DIRNAME}.tar.xz" )
+  elseif ( CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64.*|AARCH64.*)" )
+    set( CLANG_DIRNAME "clang+llvm-${CLANG_VERSION}-aarch64-linux-gnu" )
+    set( CLANG_SHA256
+         "603c0c2a507a97cf4f4e42082d90ee6ea4acd677b748e8541cf4806dcee182c3" )
+    set( CLANG_FILENAME "${CLANG_DIRNAME}.tar.xz" )
   else()
     if ( 64_BIT_PLATFORM )
-      # We MUST support the latest Ubuntu LTS release!
-      # At the time of writing, that's 14.04. Switch to next LTS ~6 months after
-      # it comes out.
-      set( CLANG_DIRNAME "clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-ubuntu-14.04" )
+      set( CLANG_DIRNAME
+           "clang+llvm-${CLANG_VERSION}-x86_64-linux-gnu-debian8" )
       set( CLANG_SHA256
-           "3120c3055ea78bbbb6848510a2af70c68538b990cb0545bac8dad01df8ff69d7" )
-      set( CLANG_FILENAME "${CLANG_DIRNAME}.tar.xz" )
+           "ca48a4def4cbc9dd6af3f46ce1dc2bd903d26c7ad51387f57884ad1eaa58e42f" )
     else()
-      # Use the prebuilt x86 binaries for Fedora 23.
-      set( CLANG_DIRNAME "clang+llvm-${CLANG_VERSION}-i686-fedora23" )
-      set( CLANG_SHA256
-           "063a5430b1895a1565831ab0b840cdb14f22ee9fad38e82b9bb8be76e49f1a8b" )
-      set( CLANG_FILENAME "${CLANG_DIRNAME}.tar.xz" )
+      message( FATAL_ERROR
+        "No prebuilt Clang ${CLANG_VERSION} binaries for 32-bit Linux. "
+        "You'll have to compile Clang ${CLANG_VERSION} from source. "
+        "See the YCM docs for details on how to use a user-compiled libclang." )
     endif()
+    set( CLANG_FILENAME "${CLANG_DIRNAME}.tar.xz" )
   endif()
 
   # Check if the Clang archive is already downloaded and its checksum is correct.
@@ -193,7 +206,7 @@ if ( APPLE )
 endif()
 
 if ( USE_SYSTEM_BOOST )
-  set( Boost_COMPONENTS filesystem system regex thread )
+  set( Boost_COMPONENTS filesystem system )
   if( USE_PYTHON2 )
     list( APPEND Boost_COMPONENTS python )
   else()
@@ -207,10 +220,11 @@ endif()
 
 file( GLOB_RECURSE SERVER_SOURCES *.h *.cpp )
 
-# The test sources are a part of a different target, so we remove them
-# The CMakeFiles cpp file is picked up when the user creates an in-source build,
-# and we don't want that. We also remove client-specific code
-file( GLOB_RECURSE to_remove tests/*.h tests/*.cpp CMakeFiles/*.cpp *client* )
+# The test and benchmark sources are a part of a different target, so we remove
+# them. The CMakeFiles cpp file is picked up when the user creates an in-source
+# build, and we don't want that. We also remove client-specific code.
+file( GLOB_RECURSE to_remove tests/*.h tests/*.cpp benchmarks/*.h
+                             benchmarks/*.cpp CMakeFiles/*.cpp *client* )
 
 if( to_remove )
   list( REMOVE_ITEM SERVER_SOURCES ${to_remove} )
@@ -247,7 +261,7 @@ include_directories(
 
 # One can use the system libclang.[so|dylib] like so:
 #   cmake -DUSE_SYSTEM_LIBCLANG=1 [...]
-# One can also explicitely pick the external libclang.[so|dylib] for use like so:
+# One can also explicitly pick the external libclang.[so|dylib] for use like so:
 #   cmake -DEXTERNAL_LIBCLANG_PATH=/path/to/libclang.so [...]
 # The final .so we build will then first look in the same dir in which it is
 # located for libclang.so. This is provided by the rpath = $ORIGIN feature.
@@ -276,12 +290,12 @@ if ( EXTERNAL_LIBCLANG_PATH OR USE_SYSTEM_LIBCLANG )
                   /usr/lib
                   /usr/lib/llvm
                   ${SYS_LLVM_PATHS}
-                  /Library/Developer/CommandLineTools/usr/lib
-                  /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib )
+                  /Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib
+                  /Library/Developer/CommandLineTools/usr/lib )
     set( EXTERNAL_LIBCLANG_PATH ${TEMP} )
   else()
     # For Macs, we do things differently; look further in this file.
-    if ( NOT APPLE )
+    if ( NOT APPLE AND NOT MSVC )
       # Setting this to true makes sure that libraries we build will have our
       # rpath set even without having to do "make install"
       set( CMAKE_BUILD_WITH_INSTALL_RPATH TRUE )
@@ -294,12 +308,10 @@ if ( EXTERNAL_LIBCLANG_PATH OR USE_SYSTEM_LIBCLANG )
     endif()
   endif()
 
-  # In Clang 3.7, the library target is a symlink of the soversion one.
-  # Since it will be copied in the project folder, we need the symlinked
-  # library.
+  # On Linux, the library target is a symlink of the soversion one.  Since it
+  # will be copied in the project folder, we need the symlinked library.
   get_filename_component( LIBCLANG_TARGET "${EXTERNAL_LIBCLANG_PATH}" REALPATH )
-  message(
-    "Using external libclang: ${LIBCLANG_TARGET}" )
+  message( "Using external libclang: ${LIBCLANG_TARGET}" )
 else()
   set( LIBCLANG_TARGET )
 endif()
@@ -347,33 +359,20 @@ if( LIBCLANG_TARGET )
       COMMAND ${CMAKE_COMMAND} -E copy "${LIBCLANG_TARGET}" "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
     )
 
-    if( APPLE )
-      # In OS X El Capitan, Apple introduced System Integrity Protection.
-      # Amongst other things, this introduces features to the dynamic loader
-      # (dyld) which cause it to "sanitise" (and complain about) embedded
-      # LC_RPATH entries which contain @executable_path when then are loaded
-      # into "restricted" binaries.  For our purposes, "restricted" here means
-      # "supplied by Apple" and includes the system versions of python.  For
-      # unknown reasons, the libclang.dylib that comes from llvm.org includes an
-      # LC_RPATH entry '@executable_path/../lib' which causes the OS X dynamic
-      # loader to print a cryptic warning to stderr of the form:
-      #
-      #    dyld: warning, LC_RPATH @executable_path/../lib in
-      #    /path/to/ycmd/libclang.dylib being ignored in restricted program
-      #    because of @executable_path
-      #
-      # In order to prevent this harmless and annoying message appearing, we
-      # simply strip the rpath entry from the dylib.  There's no way any
-      # @executable_path that python might have could be in any way useful to
-      # libclang.dylib, so this seems perfectly safe.
-      get_filename_component( LIBCLANG_TAIL ${LIBCLANG_TARGET} NAME )
-      add_custom_command( TARGET ${PROJECT_NAME}
-                          POST_BUILD
-                          COMMAND install_name_tool
-                          "-delete_rpath"
-                          "@executable_path/../lib"
-                          "$<TARGET_FILE_DIR:${PROJECT_NAME}>/${LIBCLANG_TAIL}"
-                        )
+    if( NOT APPLE )
+      # When loading our library, the dynamic linker may look for
+      # libclang.so.x instead of libclang.so.x.y. Create the corresponding
+      # symlink.
+      get_filename_component( LIBCLANG_NAME ${LIBCLANG_TARGET} NAME )
+      string( REGEX REPLACE "([^.]+).([0-9]+).([0-9]+)$" "\\1.\\2"
+              LIBCLANG_SONAME ${LIBCLANG_NAME} )
+      add_custom_command(
+        TARGET ${PROJECT_NAME}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E create_symlink
+        "${LIBCLANG_NAME}"
+        "$<TARGET_FILE_DIR:${PROJECT_NAME}>/${LIBCLANG_SONAME}"
+      )
     endif()
   endif()
 endif()
@@ -392,7 +391,7 @@ endif()
 # present in the same directory as our ycm_core.so is used.
 # And the extra `rpath` is helpful to find libclang.dylib's dependencies
 # if it is built with `--enable-shared` flag.
-if ( EXTERNAL_LIBCLANG_PATH AND APPLE )
+if ( EXTERNAL_LIBCLANG_PATH AND APPLE AND NOT USE_SYSTEM_LIBCLANG)
   get_filename_component(EXTRA_LIB_PATH ${EXTERNAL_LIBCLANG_PATH} DIRECTORY)
 
   set_target_properties(${PROJECT_NAME}
@@ -415,7 +414,7 @@ endif()
 # for our module
 set_target_properties( ${PROJECT_NAME} PROPERTIES PREFIX "")
 
-if ( WIN32 OR CYGWIN )
+if ( WIN32 OR CYGWIN OR MSYS )
   # DLL platforms put dlls in the RUNTIME_OUTPUT_DIRECTORY
   # First for the generic no-config case (e.g. with mingw)
   set_target_properties( ${PROJECT_NAME} PROPERTIES
@@ -430,8 +429,8 @@ if ( WIN32 OR CYGWIN )
   if ( WIN32 )
     # This is the extension for compiled Python modules on Windows
     set_target_properties( ${PROJECT_NAME} PROPERTIES SUFFIX ".pyd")
-  elseif ( CYGWIN )
-    # This is the extension for compiled Python modules in Cygwin
+  elseif ( CYGWIN OR MSYS )
+    # This is the extension for compiled Python modules in Cygwin and msys
     set_target_properties( ${PROJECT_NAME} PROPERTIES SUFFIX ".dll")
   endif()
 else()
@@ -457,16 +456,6 @@ endif()
 
 #############################################################################
 
-# We want warnings if we accidentally use C++11 features
-# We can't use this warning on FreeBSD because std headers on that OS are dumb.
-# See here: https://github.com/Valloric/YouCompleteMe/issues/260
-if ( USE_DEV_FLAGS AND COMPILER_IS_CLANG AND NOT CMAKE_GENERATOR_IS_XCODE AND
-     NOT SYSTEM_IS_FREEBSD )
-  set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wc++98-compat" )
-endif()
-
-#############################################################################
-
 if( SYSTEM_IS_SUNOS )
   # SunOS needs this setting for thread support
   set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthreads" )
@@ -477,3 +466,4 @@ if( SYSTEM_IS_OPENBSD OR SYSTEM_IS_FREEBSD )
 endif()
 
 add_subdirectory( tests )
+add_subdirectory( benchmarks )
